@@ -1,163 +1,84 @@
 package main
 
 import (
-	"encoding/binary"
-	"encoding/hex"
-	"fmt"
-	"io"
-	"log"
-	"net"
+    "fmt"
+    "golang.org/x/net/icmp"
+    "golang.org/x/net/ipv4"
+    "net"
+    "os"
+    "time"
 )
-
-type EthernetFrame struct {
-	Preamble   [7]byte // プリアンブル
-	DstMacAddr [6]byte // 宛先MACアドレス
-	SrcMacAddr [6]byte // 送信元MACアドレス
-	Type       [2]byte // イーサタイプ
-	Payload    []byte  // ペイロード
-}
-
-type Arp struct {
-	HardwareType     [2]byte // ハードウェアタイプ（イーサネット: 0x0001）
-	ProtocolType     [2]byte // プロトコルタイプ（IPv4: 0x0800）
-	HardwareSize     byte    // ハードウェアサイズ（通常6）
-	ProtocolSize     byte    // プロトコルサイズ（通常4）
-	OperationCode    [2]byte // オペレーションコード（リクエスト: 0x0001、リプライ: 0x0002）
-	SenderMacAddress [6]byte // 送信元MACアドレス
-	SenderIPAddress  [4]byte // 送信元IPアドレス
-	TargetMacAddress [6]byte // 宛先MACアドレス
-	TargetIPAddress  [4]byte // 宛先IPアドレス
-}
-
-type ICMP struct {
-	Type     byte    // タイプ
-	Code     byte    // コード
-	Checksum [2]byte // チェックサム
-	ID       [2]byte // 識別子
-	Seq      [2]byte // シーケンス番号
-	Data     []byte  // データ
-}
-
-type LocalIpMacAddr struct {
-	LocalMacAddr [6]byte
-	LocalIpAddr  [4]byte
-}
-
-var (
-	EtherTypeIPv4       = [2]byte{0x08, 0x00}
-	EtherTypeARP        = [2]byte{0x08, 0x06}
-	EtherTypeAppleTalk  = [2]byte{0x80, 0x9b}
-	EtherTypeIEEE802_1q = [2]byte{0x81, 0x00}
-	EtherTypeIPv6       = [2]byte{0x86, 0xdd}
-)
-
-func NewEthernetFrame(dstMacAddr, srcMacAddr, ethType string) EthernetFrame {
-	var ethernet EthernetFrame
-
-	// プリアンブルの設定
-	ethernet.Preamble = [7]byte{0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xab}
-
-	// MACアドレスをバイト配列に変換して設定
-	dstMac, err := hex.DecodeString(dstMacAddr)
-	if err != nil || len(dstMac) != 6 {
-		log.Fatalf("Invalid destination MAC address: %v", err)
-	}
-	srcMac, err := hex.DecodeString(srcMacAddr)
-	if err != nil || len(srcMac) != 6 {
-		log.Fatalf("Invalid source MAC address: %v", err)
-	}
-	copy(ethernet.DstMacAddr[:], dstMac)
-	copy(ethernet.SrcMacAddr[:], srcMac)
-
-	// EtherTypeの設定
-	switch ethType {
-	case "IPv4":
-		ethernet.Type = [2]byte{0x08, 0x00}
-	case "IPv6":
-		ethernet.Type = [2]byte{0x86, 0xDD}
-	case "ARP":
-		ethernet.Type = [2]byte{0x08, 0x06}
-	default:
-		log.Fatalf("Unknown EtherType: %s", ethType)
-	}
-
-	return ethernet
-}
-
-func NewArpRequest(localif LocalIpMacAddr, targetip string) Arp {
-	return Arp{
-		HardwareType:     [2]byte{0x00, 0x01},
-		ProtocolType:     [2]byte{0x08, 0x00},
-		HardwareSize:     6,
-		ProtocolSize:     4,
-		OperationCode:    [2]byte{0x00, 0x01},
-		SenderMacAddress: localif.LocalMacAddr,
-		SenderIPAddress:  localif.LocalIpAddr,
-		TargetMacAddress: [6]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
-		TargetIPAddress:  iptobyte(targetip),
-	}
-}
-
-func NewICMPRequest(id, seq uint16, data []byte) ICMP {
-	icmp := ICMP{
-		Type: 8,
-		Code: 0,
-		ID:   [2]byte{byte(id >> 8), byte(id & 0xff)},
-		Seq:  [2]byte{byte(seq >> 8), byte(seq & 0xff)},
-		Data: data,
-	}
-	icmp.Checksum = calculateChecksum(icmp)
-	return icmp
-}
-func calculateChecksum(icmp ICMP) [2]byte {
-	// ダミーのチェックサムを0に設定しデータをシリアライズ
-	icmp.Checksum = [2]byte{0x00, 0x00}
-	var buf []byte
-	buf = append(buf, icmp.Type, icmp.Code)
-	buf = append(buf, icmp.Checksum[:]...)
-	buf = append(buf, icmp.ID[:]...)
-	buf = append(buf, icmp.Seq[:]...)
-	buf = append(buf, icmp.Data...)
-
-	// チェックサム計算
-	sum := 0
-	for i := 0; i < len(buf)-1; i += 2 {
-		sum += int(binary.BigEndian.Uint16(buf[i : i+2]))
-	}
-	if len(buf)%2 == 1 {
-		sum += int(buf[len(buf)-1]) << 8
-	}
-	for (sum >> 16) > 0 {
-		sum = (sum & 0xFFFF) + (sum >> 16)
-	}
-	checksum := ^uint16(sum)
-
-	return [2]byte{byte(checksum >> 8), byte(checksum & 0xff)}
-}
-
-func iptobyte(ipStr string) [4]byte {
-	ip := net.ParseIP(ipStr).To4()
-	if ip == nil {
-		log.Fatalf("Invalid IP address: %s", ipStr)
-	}
-	var ipBytes [4]byte
-	copy(ipBytes[:], ip)
-	return ipBytes
-}
 
 func main() {
-	//RAWソケット作成
-	conn, err := net.ListenPacket("ip4:icmp", "0.0.0.0")
-	if err != nil {
-		log.Fatalf("Error creating RAW Socket: %v", err)
-	}
+    // 対象のIPアドレスを指定
+    target := "8.8.8.8" // Google DNSのIPアドレス
 
-	defer conn.Close()
+    // ICMP Echo Requestメッセージの作成
+    icmpMessage := icmp.Message{
+        Type: ipv4.ICMPTypeEcho, Code: 0,
+        Body: &icmp.Echo{
+            ID: os.Getpid() & 0xffff, Seq: 1,
+            Data: []byte("HELLO-R-U-THERE"),
+        },
+    }
+    messageData, err := icmpMessage.Marshal(nil)
+    if err != nil {
+        fmt.Printf("メッセージのマーシャルに失敗しました: %v\n", err)
+        return
+    }
 
-	// ARPリクエストを送信
+    // ICMPプロトコルを使用したネットワーク接続の作成
+    conn, err := icmp.ListenPacket("ip4:icmp", "0.0.0.0")
+    if err != nil {
+        fmt.Printf("接続の作成に失敗しました: %v\n", err)
+        return
+    }
+    defer conn.Close()
 
-	//ICMPパケット作成
-	//icmp := NewICMPRequest(1, 1, []byte("ping"))
+    // 送信先アドレスの設定
+    dst, err := net.ResolveIPAddr("ip4", target)
+    if err != nil {
+        fmt.Printf("アドレスの解決に失敗しました: %v\n", err)
+        return
+    }
+
+    // パケットの送信
+    startTime := time.Now()
+    n, err := conn.WriteTo(messageData, dst)
+    if err != nil {
+        fmt.Printf("パケットの送信に失敗しました: %v\n", err)
+        return
+    } else if n != len(messageData) {
+        fmt.Printf("送信バイト数が一致しません: %v\n", err)
+        return
+    }
+    fmt.Printf("Pingを送信しました。対象IP: %s\n", target)
+
+    // パケットの受信
+    reply := make([]byte, 1500)
+    err = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+    if err != nil {
+        fmt.Printf("読み取りタイムアウトの設定に失敗しました: %v\n", err)
+        return
+    }
+    n, peer, err := conn.ReadFrom(reply)
+    if err != nil {
+        fmt.Printf("パケットの受信に失敗しました: %v\n", err)
+        return
+    }
+    rtt := time.Since(startTime)
+
+    // 受信したICMPメッセージの解析
+    receivedMessage, err := icmp.ParseMessage(ipv4.ICMPTypeEchoReply.Protocol(), reply[:n])
+    if err != nil {
+        fmt.Printf("メッセージの解析に失敗しました: %v\n", err)
+        return
+    }
+
+    switch receivedMessage.Type {
+    case ipv4.ICMPTypeEchoReply:
+        fmt.Printf("Pingの応答あり。応答元IP: %s 時間: %v\n", peer.String(), rtt)
+    default:
+        fmt.Printf("予期しないICMPメッセージを受信しました: %+v\n", receivedMessage)
+    }
 }
-
-func ArpSend
